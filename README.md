@@ -1,5 +1,7 @@
 # Heart Valve Defect Detection & Analysis Platform
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/herrrickshaw/heart-valve-defect-detection/blob/main/notebooks/colab_test.ipynb)
+
 An AI-assisted cardiac ultrasound (TTE) analysis system for automated heart valve disease detection and verification. Implements a comprehensive clinical decision-support framework with mandatory clinician review and sign-off.
 
 **Based on:** Technical Architecture Specification - "An AI-Assisted Heart Valve Defect Detection and Verification Platform"
