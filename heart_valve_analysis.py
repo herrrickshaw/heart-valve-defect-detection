@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
-from sklearn.metrics import dice, jaccard_score
 import cv2
 from pathlib import Path
 from dataclasses import dataclass
@@ -18,6 +17,18 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def dice(a: np.ndarray, b: np.ndarray) -> float:
+    """Dice coefficient 2|A∩B| / (|A|+|B|) of two boolean masks (1.0 if both empty).
+
+    sklearn.metrics has no ``dice``; scipy's ``distance.dice`` is the
+    dissimilarity (1 - coefficient), so neither can be dropped in here.
+    """
+    a = np.asarray(a, dtype=bool)
+    b = np.asarray(b, dtype=bool)
+    denom = a.sum() + b.sum()
+    return 1.0 if denom == 0 else float(2.0 * np.logical_and(a, b).sum() / denom)
 
 
 # ============================================================================
