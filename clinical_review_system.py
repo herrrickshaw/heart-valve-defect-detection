@@ -173,10 +173,12 @@ class ClinicalReviewWorkflow:
                 f"Clinician sign-off required before finalization. Pending: {pending}"
             )
 
-        # Only approved findings enter the patient record
+        # Only clinician-signed findings enter the patient record: approved as
+        # is, or approved with a clinician-modified severity.
+        signed_off = (ReviewStatus.CLINICIAN_APPROVED.value, ReviewStatus.CLINICIAN_MODIFIED.value)
         approved_findings = {
             fid: f for fid, f in self.findings.items()
-            if f['status'] == ReviewStatus.CLINICIAN_APPROVED.value
+            if f['status'] in signed_off
         }
 
         self.audit_trail.append(AuditLog(
