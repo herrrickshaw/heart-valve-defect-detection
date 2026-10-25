@@ -106,6 +106,9 @@ class DICOMAnonymizer:
 
         removed_fields = {}
 
+        # Infer the view BEFORE SeriesDescription is deleted below.
+        view_type = self._infer_view_type(ds)
+
         # Remove all PHI fields
         phi_removals = [
             ('PatientName', 'PATIENT_NAME'),
@@ -123,23 +126,22 @@ class DICOMAnonymizer:
 
         for attr, label in phi_removals:
             if hasattr(ds, attr):
-                removed_fields[label] = getattr(ds, attr)
+                removed_fields[label] = '<removed>'   # never copy PHI into the report/log
                 delattr(ds, attr)
 
         # Replace study/series descriptions with generic view labels
         if self.keep_views_only:
-            view_type = self._infer_view_type(ds)
             ds.SeriesDescription = f"Echo_{view_type.value}"
             ds.StudyDescription = "Cardiac Ultrasound"
 
         # Date shift (required by HIPAA Safe Harbor)
         # In production: use deterministic date shift per patient (e.g., hash-based)
         if hasattr(ds, 'StudyDate'):
-            removed_fields['STUDY_DATE'] = ds.StudyDate
+            removed_fields['STUDY_DATE'] = '<replaced>'
             # Simulate: shift by fixed days (in prod: use crypto hash for consistency)
             ds.StudyDate = '20250101'  # Placeholder
         if hasattr(ds, 'SeriesDate'):
-            removed_fields['SERIES_DATE'] = ds.SeriesDate
+            removed_fields['SERIES_DATE'] = '<replaced>'
             ds.SeriesDate = '20250101'
 
         # Remove all private tags (manufacturer-specific, potentially identifying)
@@ -181,10 +183,12 @@ class DICOMAnonymizer:
         # In production: use more sophisticated view detection
         series_desc = getattr(ds, 'SeriesDescription', 'unknown').lower()
 
+        # Distinctive keywords only: 'parasternal' is shared by PLAX and PSAX,
+        # and a bare '4' matched any description containing that digit.
         view_keywords = {
-            DICOMViewType.APICAL_4_CHAMBER: ['apical', '4', 'four', 'a4c'],
-            DICOMViewType.PARASTERNAL_LONG_AXIS: ['parasternal', 'long', 'plax'],
-            DICOMViewType.PARASTERNAL_SHORT_AXIS: ['parasternal', 'short', 'psax'],
+            DICOMViewType.PARASTERNAL_SHORT_AXIS: ['short axis', 'psax', 'sax'],
+            DICOMViewType.PARASTERNAL_LONG_AXIS: ['long axis', 'plax', 'lax'],
+            DICOMViewType.APICAL_4_CHAMBER: ['a4c', 'apical 4', 'four chamber', '4 chamber', '4-chamber'],
         }
 
         for view, keywords in view_keywords.items():
