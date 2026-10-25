@@ -9,6 +9,8 @@ Two methods:
 import os
 from pathlib import Path
 
+import numpy as np
+
 # ============================================================================
 # METHOD 1: Using kagglehub (Recommended - Simpler)
 # ============================================================================
@@ -193,7 +195,7 @@ def quick_analyze_pretrained(model_path: str):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     model = UNetSegmenter(in_channels=1, num_classes=3).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.eval()
 
     # Load validation data
