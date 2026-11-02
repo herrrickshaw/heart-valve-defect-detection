@@ -84,14 +84,14 @@ def analyze_camus_dataset(dataset_path: Path):
     """
     Load CAMUS and run analysis with your heart disease system
     """
-    from heart_valve_analysis import (
-        CAMUSDataset,
-        UNetSegmenter,
-        SegmentationTrainer,
-        SegmentationValidator
-    )
     import torch
     from torch.utils.data import DataLoader
+
+    from heart_valve_analysis import (
+        CAMUSDataset,
+        SegmentationTrainer,
+        UNetSegmenter,
+    )
 
     print("\n" + "="*70)
     print("INITIALIZING HEART DISEASE ANALYSIS SYSTEM")
@@ -150,7 +150,7 @@ def analyze_camus_dataset(dataset_path: Path):
                 best_dice = dice
                 # Save checkpoint
                 torch.save(model.state_dict(), f'model_epoch_{epoch+1}_dice_{dice:.4f}.pt')
-                print(f"  💾 Saved checkpoint")
+                print("  💾 Saved checkpoint")
 
     # 5. Final validation
     print("\n[STEP 5] Final validation...")
@@ -185,9 +185,11 @@ def quick_analyze_pretrained(model_path: str):
     """
     Load a pre-trained model and analyze CAMUS validation set
     """
+    import numpy as np
     import torch
     from torch.utils.data import DataLoader
-    from heart_valve_analysis import CAMUSDataset, UNetSegmenter, SegmentationValidator
+
+    from heart_valve_analysis import CAMUSDataset, SegmentationValidator, UNetSegmenter
 
     print("Loading pre-trained model...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -237,8 +239,6 @@ def quick_analyze_pretrained(model_path: str):
 # ============================================================================
 
 if __name__ == "__main__":
-    import sys
-
     print("🏥 HEART DISEASE ANALYSIS SYSTEM - CAMUS DATASET DOWNLOAD & ANALYSIS")
     print("="*70 + "\n")
 
@@ -263,7 +263,7 @@ if __name__ == "__main__":
         if choice == "1":
             print("\n⏳ This will take 4-6 hours on GPU...")
             model, trainer, metrics = analyze_camus_dataset(dataset_path)
-            print(f"\n✅ Training complete! Model saved.")
+            print("\n✅ Training complete! Model saved.")
 
         elif choice == "2":
             print("\nNote: Requires pre-trained model weights (.pt file)")

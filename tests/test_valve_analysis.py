@@ -78,3 +78,12 @@ def test_validator_perfect_prediction():
     metrics = hva.SegmentationValidator.compute_metrics(m, m, 0.3, 0.15)
     assert metrics["dice_lv_median"] == pytest.approx(1.0)
     assert metrics["x_error_median_mm"] == 0.0
+
+
+def test_dice_coefficient():
+    a = np.array([[1, 1], [0, 0]], dtype=float)
+    b = np.array([[1, 0], [0, 0]], dtype=float)
+    assert hva.dice(a, a) == pytest.approx(1.0)
+    assert hva.dice(a, b) == pytest.approx(2 / 3)
+    assert hva.dice(np.zeros((2, 2)), np.zeros((2, 2))) == 1.0
+    assert hva.dice(a, 1 - a) == 0.0

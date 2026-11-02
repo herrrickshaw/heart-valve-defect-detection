@@ -82,3 +82,12 @@ def test_regional_gate(region, enabled):
 
 def test_unknown_feature_is_disabled():
     assert RegionalFeatureGate.is_feature_enabled("x", "US") == (False, "Unknown feature: x")
+
+
+def test_example_workflow_runs_and_exports_audit(tmp_path, monkeypatch):
+    import clinical_review_system as crs
+    written = []
+    monkeypatch.setattr(crs.ClinicalReviewWorkflow, "export_audit_trail",
+                        lambda self, path: written.append(path))
+    crs.example_clinical_review_workflow()
+    assert written == ["/tmp/audit_trail.json"]

@@ -12,7 +12,6 @@ from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
-from sklearn.metrics import dice
 
 # Severity cut-off for the primary criterion (aortic valve area, cm^2); ACC/AHA 2014.
 SEVERE_AS_AREA_CM2 = 1.0
@@ -21,6 +20,18 @@ MODERATE_AS_AREA_CM2 = 1.5
 MASK_THRESHOLD = 0.5
 # Canny hysteresis thresholds used on the LV mask boundary.
 CANNY_LOW, CANNY_HIGH = 100, 200
+
+
+def dice(pred: np.ndarray, truth: np.ndarray) -> float:
+    """Dice coefficient 2|A∩B| / (|A|+|B|) of two same-shape masks (binarised at 0.5).
+
+    Two empty masks score 1.0. (``sklearn.metrics`` has no ``dice`` function, so the
+    previous import failed at module load.)
+    """
+    a = np.asarray(pred) > MASK_THRESHOLD
+    b = np.asarray(truth) > MASK_THRESHOLD
+    total = a.sum() + b.sum()
+    return 1.0 if total == 0 else float(2.0 * np.logical_and(a, b).sum() / total)
 
 
 @dataclass

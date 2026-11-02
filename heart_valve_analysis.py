@@ -13,7 +13,6 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import dice
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 
@@ -26,6 +25,7 @@ from valve_measurements import (  # noqa: F401
     FrameMetadata,
     HingePointEstimate,
     HingePointExtractor,
+    dice,
 )
 
 logger = logging.getLogger(__name__)
