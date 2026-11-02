@@ -178,6 +178,7 @@ class ClinicalReviewWorkflow:
             fid: f for fid, f in self.findings.items()
             if f['status'] == ReviewStatus.CLINICIAN_APPROVED.value
         }
+        rejected_count = self._count_with_status(ReviewStatus.CLINICIAN_REJECTED)
 
         self.audit_trail.append(AuditLog(
             event_type='study_finalized',
@@ -186,17 +187,14 @@ class ClinicalReviewWorkflow:
             details={
                 'total_findings': len(self.findings),
                 'approved_findings': len(approved_findings),
-                'rejected_findings': len([
-                    f for f in self.findings.values()
-                    if f['status'] == ReviewStatus.CLINICIAN_REJECTED.value
-                ])
+                'rejected_findings': rejected_count
             }
         ))
 
         logger.info(
             f"[{self.study_id}] Study finalized: "
             f"{len(approved_findings)} approved, "
-            f"{len([f for f in self.findings.values() if f['status'] == ReviewStatus.CLINICIAN_REJECTED.value])} rejected"
+            f"{rejected_count} rejected"
         )
 
         return {
@@ -206,6 +204,10 @@ class ClinicalReviewWorkflow:
             'approved_findings': approved_findings,
             'audit_trail': [a.to_dict() for a in self.audit_trail]
         }
+
+    def _count_with_status(self, status: ReviewStatus) -> int:
+        """Number of findings currently in the given review status."""
+        return sum(1 for f in self.findings.values() if f['status'] == status.value)
 
     def get_pending_reviews(self) -> List[Dict]:
         """Get list of findings awaiting clinician review"""
