@@ -6,13 +6,13 @@ Required by Clinical Precedence Rule: No clinically shared data reaches the mode
 pipeline without PHI-stripping and de-identification at the gate.
 """
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-from pathlib import Path
-from enum import Enum
-import json
 from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
