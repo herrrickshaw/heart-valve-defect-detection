@@ -4,83 +4,40 @@ Based on: Technical Architecture Specification
 Implements AI-assisted TTE (Transthoracic Echocardiography) analysis
 """
 
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import dice
 from torch.optim import Adam
-from sklearn.metrics import dice, jaccard_score
-import cv2
-from pathlib import Path
-from dataclasses import dataclass
-from typing import Tuple, Dict, List, Optional
-import logging
+from torch.utils.data import DataLoader, Dataset
 
-logging.basicConfig(level=logging.INFO)
+# Torch-free measurement logic lives in valve_measurements; re-exported here so existing
+# ``from heart_valve_analysis import ...`` imports keep working.
+from valve_measurements import (  # noqa: F401
+    AorticStenosisClassifier,
+    CAMUS_Benchmark,
+    ClinicalFinding,
+    FrameMetadata,
+    HingePointEstimate,
+    HingePointExtractor,
+)
+
 logger = logging.getLogger(__name__)
 
-
-# ============================================================================
-# 1. DATA STRUCTURES & CONFIGURATION
-# ============================================================================
-
-@dataclass
-class FrameMetadata:
-    """Metadata for cardiac imaging frame"""
-    cardiac_phase: str  # 'ED' (end-diastole) or 'ES' (end-systole)
-    view_type: str  # 'a4c' (apical 4-chamber), 'PLAX', etc.
-    frame_idx: int
-    pixel_spacing_x: float  # mm per pixel
-    pixel_spacing_y: float  # mm per pixel
-    image_quality: str  # 'good', 'acceptable', 'poor'
-
-
-@dataclass
-class HingePointEstimate:
-    """Mitral valve hinge point coordinates and confidence"""
-    anterior_hinge: Tuple[float, float]  # (x, y) in mm
-    posterior_hinge: Tuple[float, float]  # (x, y) in mm
-    x_uncertainty_mm: float = 1.35  # Median x-error from CAMUS
-    y_uncertainty_mm: float = 0.75  # Median y-error from CAMUS
-    confidence_score: float = 0.0  # 0-1
-
-    @property
-    def mv_diameter_mm(self) -> float:
-        """Compute mitral valve diameter from hinge points"""
-        dx = self.posterior_hinge[0] - self.anterior_hinge[0]
-        dy = self.posterior_hinge[1] - self.anterior_hinge[1]
-        return np.sqrt(dx**2 + dy**2)
-
-
-@dataclass
-class ClinicalFinding:
-    """Flagged clinical finding for clinician review"""
-    finding_type: str  # 'severe_aortic_stenosis', 'mitral_regurgitation', etc.
-    severity: str  # 'mild', 'moderate', 'severe'
-    measurement_value: float
-    reference_threshold: float
-    requires_review: bool = True
-    supporting_measurements: Dict = None
-
-    def __repr__(self) -> str:
-        return (f"{self.finding_type.upper()}: {self.severity} "
-                f"({self.measurement_value:.2f} vs. threshold {self.reference_threshold:.2f})")
-
-
-class CAMUS_Benchmark:
-    """Reference benchmarks from CAMUS dataset validation"""
-    DICE_LV_ED = 0.931
-    DICE_LV_ES = 0.915
-    DICE_LA_ED = 0.923
-
-    X_ERROR_MEDIAN_MM = 1.35
-    Y_ERROR_MEDIAN_MM = 0.75
-    X_ERROR_P85_MM = 3.15
-    Y_ERROR_P85_MM = 1.88
-
-    # Systematic bias (to be applied post-inference)
-    BIAS_VERTICAL_MM = 0.5
-    BIAS_HORIZONTAL_MM = 0.3
+# Minimum Dice-based confidence before a frame is flagged for clinician review.
+LOW_CONFIDENCE_THRESHOLD = 0.85
+# Frames are 8-bit greyscale; scale to [0, 1] before inference.
+PIXEL_MAX = 255.0
+# PLACEHOLDER values (no real aortic measurement is made yet): they always yield a severe-AS
+# flag when the AS classifier is enabled. Kept as-is to preserve behaviour; see README.
+PLACEHOLDER_AORTIC_VALVE_AREA_CM2 = 0.8
+PLACEHOLDER_PEAK_VELOCITY_MS = 4.5
 
 
 # ============================================================================
@@ -188,162 +145,6 @@ class UNetSegmenter(nn.Module):
         # Output
         x = self.out_conv(x)
         return self.out_softmax(x)
-
-
-# ============================================================================
-# 3. FEATURE EXTRACTION: Hinge Point Detection (Step 2 of Two-Step Method)
-# ============================================================================
-
-class HingePointExtractor:
-    """
-    Deterministic feature-based extraction of mitral valve hinge points.
-
-    Step 2 of the Two-Step Method:
-    1. Identify the contact line where LV and LA segments meet
-    2. Extract the endpoints as anterior (aMVL) and posterior (pMVL) hinge points
-    """
-
-    @staticmethod
-    def extract_hinge_points(
-        segmentation_mask: np.ndarray,
-        metadata: FrameMetadata,
-        apply_bias_correction: bool = True
-    ) -> HingePointEstimate:
-        """
-        Extract MV hinge points from segmentation mask.
-
-        Args:
-            segmentation_mask: Shape (H, W, 3) with channels [LV, LA, BG]
-            metadata: Frame metadata including pixel spacing
-            apply_bias_correction: Apply systematic bias offsets per CAMUS calibration
-
-        Returns:
-            HingePointEstimate with hinge coordinates in mm
-        """
-        lv_mask = segmentation_mask[:, :, 0] > 0.5
-        la_mask = segmentation_mask[:, :, 1] > 0.5
-
-        # Find contact line: pixels on LV boundary adjacent to LA
-        lv_boundary = cv2.Canny(lv_mask.astype(np.uint8) * 255, 100, 200)
-        contact_line = lv_boundary & la_mask
-
-        # Extract hinge point coordinates (endpoints of contact line)
-        y_coords, x_coords = np.where(contact_line)
-
-        if len(x_coords) < 2:
-            # Fallback: use LV boundary extremes
-            lv_y, lv_x = np.where(lv_mask)
-            anterior = (np.min(lv_x), np.mean(lv_y))
-            posterior = (np.max(lv_x), np.mean(lv_y))
-        else:
-            # Find two endpoints of contact line
-            points = np.column_stack([x_coords, y_coords])
-            # Use PCA or extrema to find endpoints
-            extreme_idx = np.argsort(np.linalg.norm(
-                points - points.mean(axis=0), axis=1
-            ))[-2:]
-            anterior = tuple(points[extreme_idx[0]])
-            posterior = tuple(points[extreme_idx[1]])
-
-        # Convert pixel coordinates to millimeters
-        anterior_mm = (
-            anterior[0] * metadata.pixel_spacing_x,
-            anterior[1] * metadata.pixel_spacing_y
-        )
-        posterior_mm = (
-            posterior[0] * metadata.pixel_spacing_x,
-            posterior[1] * metadata.pixel_spacing_y
-        )
-
-        # Apply systematic bias correction per CAMUS calibration
-        if apply_bias_correction:
-            anterior_mm = (
-                anterior_mm[0] + CAMUS_Benchmark.BIAS_HORIZONTAL_MM,
-                anterior_mm[1] + CAMUS_Benchmark.BIAS_VERTICAL_MM
-            )
-            posterior_mm = (
-                posterior_mm[0] + CAMUS_Benchmark.BIAS_HORIZONTAL_MM,
-                posterior_mm[1] + CAMUS_Benchmark.BIAS_VERTICAL_MM
-            )
-
-        # Compute confidence based on segmentation quality
-        lv_dice = dice(lv_mask, segmentation_mask[:, :, 0] > 0.5)
-        la_dice = dice(la_mask, segmentation_mask[:, :, 1] > 0.5)
-        confidence = (lv_dice + la_dice) / 2
-
-        return HingePointEstimate(
-            anterior_hinge=anterior_mm,
-            posterior_hinge=posterior_mm,
-            confidence_score=float(confidence)
-        )
-
-
-# ============================================================================
-# 4. CLINICAL DECISION SUPPORT: Aortic Stenosis Classification
-# ============================================================================
-
-class AorticStenosisClassifier:
-    """
-    Decision-support layer for Aortic Stenosis (AS) severity classification.
-
-    Modeled on EchoSolv™ AS reference. Takes structural/functional measurements
-    and outputs severity flags for clinician review.
-
-    REGULATORY CONSTRAINT: FDA-cleared for US only. Must be geofenced in production.
-    """
-
-    # Clinical thresholds per ACC/AHA guidelines
-    AORTIC_VALVE_AREA_THRESHOLDS = {
-        'mild': (1.5, float('inf')),      # cm²
-        'moderate': (1.0, 1.5),            # cm²
-        'severe': (0.0, 1.0),              # cm²
-    }
-
-    PEAK_VELOCITY_THRESHOLDS = {
-        'mild': (0.0, 2.5),                # m/s
-        'moderate': (2.5, 4.0),            # m/s
-        'severe': (4.0, float('inf')),     # m/s
-    }
-
-    @staticmethod
-    def classify_aortic_stenosis(
-        aortic_valve_area_cm2: float,
-        peak_velocity_ms: float
-    ) -> Optional[ClinicalFinding]:
-        """
-        Classify aortic stenosis severity.
-
-        Args:
-            aortic_valve_area_cm2: Aortic valve area in cm²
-            peak_velocity_ms: Peak aortic velocity in m/s
-
-        Returns:
-            ClinicalFinding if severe AS detected, else None
-        """
-        # Determine severity from valve area (primary criterion)
-        severity = None
-        if aortic_valve_area_cm2 < 1.0:
-            severity = 'severe'
-        elif aortic_valve_area_cm2 < 1.5:
-            severity = 'moderate'
-        else:
-            severity = 'mild'
-
-        # Flag only if severe (requires clinician review)
-        if severity == 'severe':
-            return ClinicalFinding(
-                finding_type='severe_aortic_stenosis',
-                severity=severity,
-                measurement_value=aortic_valve_area_cm2,
-                reference_threshold=1.0,
-                requires_review=True,
-                supporting_measurements={
-                    'peak_velocity_ms': peak_velocity_ms,
-                    'guideline': 'ACC/AHA 2014'
-                }
-            )
-
-        return None
 
 
 # ============================================================================
@@ -465,11 +266,9 @@ class SegmentationTrainer:
         self.model.eval()
         lv_dice_scores = []
         la_dice_scores = []
-        x_errors = []
-        y_errors = []
 
         with torch.no_grad():
-            for images, masks, metadata in val_loader:
+            for images, masks, _metadata in val_loader:
                 images = images.to(self.device)
                 logits = self.model(images)
                 preds = torch.softmax(logits, dim=1)
@@ -517,12 +316,18 @@ class HeartVallueAnalysisPipeline:
         self,
         segmentation_model: UNetSegmenter,
         region: str = 'US',  # 'US', 'EU', 'ASIA', etc. (controls feature gating)
-        device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+        hinge_extractor: Optional[HingePointExtractor] = None,
+        as_classifier: Optional[AorticStenosisClassifier] = None,
+        confidence_threshold: float = LOW_CONFIDENCE_THRESHOLD,
     ):
         self.segmentation_model = segmentation_model.to(device)
         self.device = device
         self.region = region
-        self.hinge_extractor = HingePointExtractor()
+        self.confidence_threshold = confidence_threshold
+        # Collaborators are injectable (dependency inversion); defaults match previous behaviour.
+        self.hinge_extractor = hinge_extractor or HingePointExtractor()
+        self.as_classifier = as_classifier or AorticStenosisClassifier()
 
         # Feature gating per regulatory scope
         self.as_classifier_enabled = (region == 'US')  # FDA-cleared for US only
@@ -556,7 +361,7 @@ class HeartVallueAnalysisPipeline:
         with torch.no_grad():
             for frame_idx, frame in enumerate(frame_sequence):
                 # Preprocess: normalize to [0, 1]
-                frame_norm = frame.astype(np.float32) / 255.0
+                frame_norm = frame.astype(np.float32) / PIXEL_MAX
                 frame_tensor = torch.from_numpy(frame_norm[np.newaxis, np.newaxis, :, :]).to(self.device)
 
                 # Segment
@@ -577,13 +382,13 @@ class HeartVallueAnalysisPipeline:
                 )
 
                 # Check for measurement confidence below threshold
-                if hinge_estimate.confidence_score < 0.85:
+                if hinge_estimate.confidence_score < self.confidence_threshold:
                     results['flagged_findings'].append(
                         ClinicalFinding(
                             finding_type='low_confidence_segmentation',
                             severity='moderate',
                             measurement_value=hinge_estimate.confidence_score,
-                            reference_threshold=0.85,
+                            reference_threshold=self.confidence_threshold,
                             supporting_measurements={
                                 'frame_idx': frame_idx,
                                 'image_quality': metadata.image_quality
@@ -594,15 +399,9 @@ class HeartVallueAnalysisPipeline:
         # Decision support layer (AS classification, if enabled)
         if self.as_classifier_enabled and len(results['hinge_point_estimates']) > 0:
             # Estimate aortic valve area from measurements (placeholder)
-            mv_diameters = [h.mv_diameter_mm for h in results['hinge_point_estimates']]
-            avg_mv_diameter = np.mean(mv_diameters)
-
             # Placeholder: in production, compute actual aortic valve area from echo
-            aortic_valve_area_cm2 = 0.8  # Simulated severe AS
-            peak_velocity_ms = 4.5
-
-            as_finding = AorticStenosisClassifier.classify_aortic_stenosis(
-                aortic_valve_area_cm2, peak_velocity_ms
+            as_finding = self.as_classifier.classify_aortic_stenosis(
+                PLACEHOLDER_AORTIC_VALVE_AREA_CM2, PLACEHOLDER_PEAK_VELOCITY_MS
             )
             if as_finding:
                 results['flagged_findings'].append(as_finding)
@@ -658,28 +457,16 @@ class SegmentationValidator:
             dice_la.append(dice(la_pred, la_true))
 
             # Coordinate error (mm)
-            pred_hinge = HingePointExtractor.extract_hinge_points(
-                predictions[i],
-                FrameMetadata(
-                    cardiac_phase='unknown',
-                    view_type='a4c',
-                    frame_idx=i,
-                    pixel_spacing_x=pixel_spacing_x,
-                    pixel_spacing_y=pixel_spacing_y,
-                    image_quality='unknown'
-                )
+            frame_meta = FrameMetadata(
+                cardiac_phase='unknown',
+                view_type='a4c',
+                frame_idx=i,
+                pixel_spacing_x=pixel_spacing_x,
+                pixel_spacing_y=pixel_spacing_y,
+                image_quality='unknown'
             )
-            true_hinge = HingePointExtractor.extract_hinge_points(
-                ground_truth[i],
-                FrameMetadata(
-                    cardiac_phase='unknown',
-                    view_type='a4c',
-                    frame_idx=i,
-                    pixel_spacing_x=pixel_spacing_x,
-                    pixel_spacing_y=pixel_spacing_y,
-                    image_quality='unknown'
-                )
-            )
+            pred_hinge = HingePointExtractor.extract_hinge_points(predictions[i], frame_meta)
+            true_hinge = HingePointExtractor.extract_hinge_points(ground_truth[i], frame_meta)
 
             x_err = abs(pred_hinge.anterior_hinge[0] - true_hinge.anterior_hinge[0])
             y_err = abs(pred_hinge.anterior_hinge[1] - true_hinge.anterior_hinge[1])
@@ -705,6 +492,7 @@ class SegmentationValidator:
 
 def main():
     """Demonstration of the pipeline"""
+    logging.basicConfig(level=logging.INFO)
     logger.info("Initializing Heart Valve Analysis Pipeline")
 
     # 1. Initialize model
@@ -738,17 +526,17 @@ def main():
     results = pipeline.analyze_study(frame_sequence, metadata)
 
     # 5. Report findings (with Clinical Precedence Rule enforced)
-    logger.info(f"\n=== ANALYSIS COMPLETE ===")
+    logger.info("\n=== ANALYSIS COMPLETE ===")
     logger.info(f"Frames analyzed: {results['frames_analyzed']}")
     logger.info(f"Requires clinician review: {results['requires_clinician_review']}")
 
     if results['flagged_findings']:
-        logger.warning(f"\nFLAGGED FINDINGS (Require Clinician Sign-Off):")
+        logger.warning("\nFLAGGED FINDINGS (Require Clinician Sign-Off):")
         for i, finding in enumerate(results['flagged_findings'], 1):
             logger.warning(f"  {i}. {finding}")
 
     if results['hinge_point_estimates']:
-        logger.info(f"\nMITRAL VALVE MEASUREMENTS (First frame):")
+        logger.info("\nMITRAL VALVE MEASUREMENTS (First frame):")
         h = results['hinge_point_estimates'][0]
         logger.info(f"  Anterior hinge: {h.anterior_hinge}")
         logger.info(f"  Posterior hinge: {h.posterior_hinge}")
