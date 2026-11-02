@@ -26,7 +26,7 @@ New here? See [How to use this repo with AI](HOW_TO_USE_WITH_AI.md).
 git clone https://github.com/herrrickshaw/heart-valve-defect-detection.git
 cd heart-valve-defect-detection
 python -m venv .venv && source .venv/bin/activate
-pip install numpy opencv-python scikit-learn torch   # full pipeline; see requirements.txt for the wider list
+pip install numpy opencv-python torch   # full pipeline; see requirements.txt for the wider list
 python clinical_review_system.py                     # review workflow demo, no torch needed
 python heart_valve_analysis.py                       # pipeline demo on a synthetic random frame
 ```
