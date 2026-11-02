@@ -5,11 +5,11 @@ before entering the patient record.
 """
 
 import json
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
-from enum import Enum
 import logging
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,7 @@ class ClinicalReviewWorkflow:
             fid: f for fid, f in self.findings.items()
             if f['status'] == ReviewStatus.CLINICIAN_APPROVED.value
         }
+        rejected_count = self._count_with_status(ReviewStatus.CLINICIAN_REJECTED)
 
         self.audit_trail.append(AuditLog(
             event_type='study_finalized',
@@ -186,17 +187,14 @@ class ClinicalReviewWorkflow:
             details={
                 'total_findings': len(self.findings),
                 'approved_findings': len(approved_findings),
-                'rejected_findings': len([
-                    f for f in self.findings.values()
-                    if f['status'] == ReviewStatus.CLINICIAN_REJECTED.value
-                ])
+                'rejected_findings': rejected_count
             }
         ))
 
         logger.info(
             f"[{self.study_id}] Study finalized: "
             f"{len(approved_findings)} approved, "
-            f"{len([f for f in self.findings.values() if f['status'] == ReviewStatus.CLINICIAN_REJECTED.value])} rejected"
+            f"{rejected_count} rejected"
         )
 
         return {
@@ -206,6 +204,10 @@ class ClinicalReviewWorkflow:
             'approved_findings': approved_findings,
             'audit_trail': [a.to_dict() for a in self.audit_trail]
         }
+
+    def _count_with_status(self, status: ReviewStatus) -> int:
+        """Number of findings currently in the given review status."""
+        return sum(1 for f in self.findings.values() if f['status'] == status.value)
 
     def get_pending_reviews(self) -> List[Dict]:
         """Get list of findings awaiting clinician review"""
@@ -294,7 +296,7 @@ class ClinicalDecisionSupportReport:
                     f"   Severity: {finding.get('severity', 'N/A')}",
                     f"   Measurement: {finding.get('measurement_value', 'N/A')}",
                     f"   Threshold: {finding.get('reference_threshold', 'N/A')}",
-                    f"   Status: PENDING CLINICIAN REVIEW",
+                    "   Status: PENDING CLINICIAN REVIEW",
                     ""
                 ])
         else:
@@ -384,7 +386,7 @@ class RegionalFeatureGate:
 def example_clinical_review_workflow():
     """Demonstrates the Clinical Precedence Rule enforcement"""
 
-    logger.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     logger.info("Starting Clinical Review Workflow Example\n")
 
     # 1. Initialize workflow for a patient study
@@ -456,7 +458,7 @@ def example_clinical_review_workflow():
     logger.info("[STUDY FINALIZATION]")
     finalized_data = workflow.finalize_study()
 
-    logger.info(f"\nFinal approved findings:")
+    logger.info("\nFinal approved findings:")
     for fid, finding in finalized_data['approved_findings'].items():
         logger.info(f"  {fid}: {finding['finding_type']} ({finding['severity']})")
 

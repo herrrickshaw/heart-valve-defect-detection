@@ -6,13 +6,13 @@ Required by Clinical Precedence Rule: No clinically shared data reaches the mode
 pipeline without PHI-stripping and de-identification at the gate.
 """
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-from enum import Enum
-import json
 from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,32 @@ class PHIFields(Enum):
     STUDY_DESCRIPTION = (0x0008, 0x1030)
     SERIES_DESCRIPTION = (0x0008, 0x103E)
     COMMENTS = (0x0008, 0x4000)
+
+
+# (pydicom attribute, report label) pairs removed from every file during anonymisation.
+PHI_ATTRIBUTES = (
+    ('PatientName', 'PATIENT_NAME'),
+    ('PatientID', 'PATIENT_ID'),
+    ('PatientBirthDate', 'PATIENT_DOB'),
+    ('PatientAge', 'PATIENT_AGE'),
+    ('PatientSex', 'PATIENT_SEX'),
+    ('AccessionNumber', 'ACCESSION_NUMBER'),
+    ('ReferringPhysicianName', 'REFERRING_PHYSICIAN'),
+    ('PerformingPhysicianName', 'PERFORMING_PHYSICIAN'),
+    ('InstitutionName', 'INSTITUTION_NAME'),
+    ('StationName', 'STATION_NAME'),
+    ('SeriesDescription', 'SERIES_DESCRIPTION'),
+)
+
+# Fixed placeholder for date-shifting (production should use a per-patient deterministic shift).
+SHIFTED_DATE = '20250101'
+
+# Keyword -> view mapping for SeriesDescription; first match in insertion order wins.
+VIEW_KEYWORDS = {
+    DICOMViewType.APICAL_4_CHAMBER: ['apical', '4', 'four', 'a4c'],
+    DICOMViewType.PARASTERNAL_LONG_AXIS: ['parasternal', 'long', 'plax'],
+    DICOMViewType.PARASTERNAL_SHORT_AXIS: ['parasternal', 'short', 'psax'],
+}
 
 
 class DICOMAnonymizer:
@@ -107,21 +133,7 @@ class DICOMAnonymizer:
         removed_fields = {}
 
         # Remove all PHI fields
-        phi_removals = [
-            ('PatientName', 'PATIENT_NAME'),
-            ('PatientID', 'PATIENT_ID'),
-            ('PatientBirthDate', 'PATIENT_DOB'),
-            ('PatientAge', 'PATIENT_AGE'),
-            ('PatientSex', 'PATIENT_SEX'),
-            ('AccessionNumber', 'ACCESSION_NUMBER'),
-            ('ReferringPhysicianName', 'REFERRING_PHYSICIAN'),
-            ('PerformingPhysicianName', 'PERFORMING_PHYSICIAN'),
-            ('InstitutionName', 'INSTITUTION_NAME'),
-            ('StationName', 'STATION_NAME'),
-            ('SeriesDescription', 'SERIES_DESCRIPTION'),
-        ]
-
-        for attr, label in phi_removals:
+        for attr, label in PHI_ATTRIBUTES:
             if hasattr(ds, attr):
                 removed_fields[label] = getattr(ds, attr)
                 delattr(ds, attr)
@@ -137,10 +149,10 @@ class DICOMAnonymizer:
         if hasattr(ds, 'StudyDate'):
             removed_fields['STUDY_DATE'] = ds.StudyDate
             # Simulate: shift by fixed days (in prod: use crypto hash for consistency)
-            ds.StudyDate = '20250101'  # Placeholder
+            ds.StudyDate = SHIFTED_DATE  # Placeholder
         if hasattr(ds, 'SeriesDate'):
             removed_fields['SERIES_DATE'] = ds.SeriesDate
-            ds.SeriesDate = '20250101'
+            ds.SeriesDate = SHIFTED_DATE
 
         # Remove all private tags (manufacturer-specific, potentially identifying)
         ds.remove_private_tags()
@@ -181,13 +193,7 @@ class DICOMAnonymizer:
         # In production: use more sophisticated view detection
         series_desc = getattr(ds, 'SeriesDescription', 'unknown').lower()
 
-        view_keywords = {
-            DICOMViewType.APICAL_4_CHAMBER: ['apical', '4', 'four', 'a4c'],
-            DICOMViewType.PARASTERNAL_LONG_AXIS: ['parasternal', 'long', 'plax'],
-            DICOMViewType.PARASTERNAL_SHORT_AXIS: ['parasternal', 'short', 'psax'],
-        }
-
-        for view, keywords in view_keywords.items():
+        for view, keywords in VIEW_KEYWORDS.items():
             if any(kw in series_desc for kw in keywords):
                 return view
 
