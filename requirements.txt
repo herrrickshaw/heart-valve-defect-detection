@@ -14,7 +14,7 @@ scipy>=1.11.0
 
 # Image Processing
 opencv-python>=4.8.0
-Pillow>=10.0.0
+Pillow>=13.0.0
 
 # Medical Imaging (Optional)
 pydicom>=2.4.0
