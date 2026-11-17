@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
-from sklearn.metrics import dice, jaccard_score
 import cv2
 from pathlib import Path
 from dataclasses import dataclass
@@ -18,6 +17,18 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def dice(a: np.ndarray, b: np.ndarray) -> float:
+    """Dice coefficient 2|A∩B| / (|A|+|B|) of two boolean masks (1.0 if both empty).
+
+    sklearn.metrics has no ``dice``; scipy's ``distance.dice`` is the
+    dissimilarity (1 - coefficient), so neither can be dropped in here.
+    """
+    a = np.asarray(a, dtype=bool)
+    b = np.asarray(b, dtype=bool)
+    denom = a.sum() + b.sum()
+    return 1.0 if denom == 0 else float(2.0 * np.logical_and(a, b).sum() / denom)
 
 
 # ============================================================================
@@ -266,10 +277,17 @@ class HingePointExtractor:
                 posterior_mm[1] + CAMUS_Benchmark.BIAS_VERTICAL_MM
             )
 
-        # Compute confidence based on segmentation quality
-        lv_dice = dice(lv_mask, segmentation_mask[:, :, 0] > 0.5)
-        la_dice = dice(la_mask, segmentation_mask[:, :, 1] > 0.5)
-        confidence = (lv_dice + la_dice) / 2
+        # Confidence heuristic: soft Dice between each probability map and its
+        # own thresholded mask. 1.0 for a crisp (0/1) map, lower when the
+        # network is unsure (probabilities near 0.5). Comparing the binary mask
+        # with itself - the previous code - is always 1.0.
+        def _soft_agreement(prob: np.ndarray, hard: np.ndarray) -> float:
+            denom = prob.sum() + hard.sum()
+            return 1.0 if denom == 0 else float(2.0 * (prob * hard).sum() / denom)
+
+        lv_conf = _soft_agreement(segmentation_mask[:, :, 0].astype(float), lv_mask)
+        la_conf = _soft_agreement(segmentation_mask[:, :, 1].astype(float), la_mask)
+        confidence = (lv_conf + la_conf) / 2
 
         return HingePointEstimate(
             anterior_hinge=anterior_mm,
@@ -320,9 +338,11 @@ class AorticStenosisClassifier:
         Returns:
             ClinicalFinding if severe AS detected, else None
         """
-        # Determine severity from valve area (primary criterion)
+        # Severity from valve area, or from peak velocity per the class's own
+        # PEAK_VELOCITY_THRESHOLDS (>= 4.0 m/s = 'severe'); the velocity was
+        # previously accepted but never used.
         severity = None
-        if aortic_valve_area_cm2 < 1.0:
+        if aortic_valve_area_cm2 < 1.0 or peak_velocity_ms >= 4.0:
             severity = 'severe'
         elif aortic_valve_area_cm2 < 1.5:
             severity = 'moderate'
@@ -532,7 +552,9 @@ class HeartVallueAnalysisPipeline:
     def analyze_study(
         self,
         frame_sequence: np.ndarray,  # Shape: (num_frames, height, width)
-        metadata: FrameMetadata
+        metadata: FrameMetadata,
+        aortic_valve_area_cm2: Optional[float] = None,
+        peak_velocity_ms: Optional[float] = None,
     ) -> Dict:
         """
         Analyze a cardiac study and flag findings for clinician review.
@@ -540,6 +562,9 @@ class HeartVallueAnalysisPipeline:
         Args:
             frame_sequence: Stack of cardiac cycle frames
             metadata: Frame acquisition metadata
+            aortic_valve_area_cm2, peak_velocity_ms: Measured AS inputs. The
+                pipeline cannot derive them from the segmentation, so the AS
+                rule runs only when both are supplied.
 
         Returns:
             Dictionary with segmentation, measurements, and flagged findings
@@ -561,7 +586,8 @@ class HeartVallueAnalysisPipeline:
 
                 # Segment
                 segmentation = self.segmentation_model(frame_tensor)
-                seg_mask = segmentation[0].cpu().numpy()
+                # Network output is (C, H, W); the extractor expects (H, W, C)
+                seg_mask = np.transpose(segmentation[0].cpu().numpy(), (1, 2, 0))
 
                 # Extract hinge points (Step 2 of Two-Step Method)
                 hinge_estimate = self.hinge_extractor.extract_hinge_points(
@@ -592,15 +618,10 @@ class HeartVallueAnalysisPipeline:
                     )
 
         # Decision support layer (AS classification, if enabled)
-        if self.as_classifier_enabled and len(results['hinge_point_estimates']) > 0:
-            # Estimate aortic valve area from measurements (placeholder)
-            mv_diameters = [h.mv_diameter_mm for h in results['hinge_point_estimates']]
-            avg_mv_diameter = np.mean(mv_diameters)
-
-            # Placeholder: in production, compute actual aortic valve area from echo
-            aortic_valve_area_cm2 = 0.8  # Simulated severe AS
-            peak_velocity_ms = 4.5
-
+        # Previously a hard-coded valve area of 0.8 cm2 was fed here, so every
+        # study was flagged 'severe AS'. Only real, supplied measurements count.
+        if (self.as_classifier_enabled and aortic_valve_area_cm2 is not None
+                and peak_velocity_ms is not None):
             as_finding = AorticStenosisClassifier.classify_aortic_stenosis(
                 aortic_valve_area_cm2, peak_velocity_ms
             )
