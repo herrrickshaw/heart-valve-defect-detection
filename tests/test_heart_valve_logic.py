@@ -133,6 +133,23 @@ class TestHingeExtraction:
         est = hva.HingePointExtractor.extract_hinge_points(m, meta(hva), **raw)
         assert 13.9 <= est.anterior_hinge[1] <= 15.6 and 13.9 <= est.posterior_hinge[1] <= 15.6
 
+    def test_lv_threshold_is_strictly_above_half(self, hva):
+        m = block_mask(lv=(10, 32, 20, 44), la=(50, 60, 20, 44))
+        m[10:32, 44:48, 0] = 0.5                       # a strip at exactly 0.5 is not LV
+        est = hva.HingePointExtractor.extract_hinge_points(m, meta(hva), apply_bias_correction=False)
+        assert est.posterior_hinge[0] == pytest.approx(43 * 0.5)
+        m[10:32, 44:48, 0] = 0.51
+        est = hva.HingePointExtractor.extract_hinge_points(m, meta(hva), apply_bias_correction=False)
+        assert est.posterior_hinge[0] == pytest.approx(47 * 0.5)
+
+    def test_single_contact_pixel_uses_fallback(self, hva, monkeypatch):
+        m = block_mask(lv=(10, 32, 20, 44), la=(28, 50, 20, 44))
+        one = np.zeros((64, 64), np.uint8)
+        one[30, 30] = 255                              # exactly one contact pixel inside the LA block
+        monkeypatch.setattr(hva.cv2, "Canny", lambda *a, **k: one)
+        est = hva.HingePointExtractor.extract_hinge_points(m, meta(hva), apply_bias_correction=False)
+        assert est.anterior_hinge == pytest.approx((10.0, 10.25))      # LV-extreme fallback, not the pixel
+
     @pytest.mark.xfail(
         strict=True, raises=AssertionError,
         reason="heart_valve_analysis.py line 253: the 'two endpoints' of the contact line are chosen as the two "
@@ -344,6 +361,13 @@ class TestPipeline:
         assert flags[0].reference_threshold == 0.85 and flags[0].severity == "moderate"
         assert flags[0].measurement_value < 0.85
         assert res["requires_clinician_review"] is True
+
+    @pytest.mark.parametrize("conf,flagged", [(0.85, False), (0.8499, True), (0.9, False)])
+    def test_review_flag_threshold_is_strict(self, hva, monkeypatch, conf, flagged):
+        est = hva.HingePointEstimate((0.0, 0.0), (1.0, 0.0), confidence_score=conf)
+        monkeypatch.setattr(hva.HingePointExtractor, "extract_hinge_points", staticmethod(lambda *a, **k: est))
+        _, _, res = self._run(hva, frames=1)
+        assert [f.finding_type for f in res["flagged_findings"]] == (["low_confidence_segmentation"] if flagged else [])
 
     def test_confidence_exactly_at_threshold_is_not_flagged(self, hva):
         _, _, res = self._run(hva)           # crisp mask -> confidence 1.0

@@ -156,6 +156,16 @@ class TestIngestionPipeline:
         s = p.ingested_series[0]
         assert s.series_id == "SERIES_00000" and s.study_id.startswith("STUDY_HospA_")
 
+    def test_simulated_anonymisation_counts_as_success(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(sys.modules, "pydicom", None)          # demo mode: no pydicom available
+        src = tmp_path / "src" / "d"
+        src.mkdir(parents=True)
+        (src / "x.dcm").write_bytes(b"placeholder")
+        p = DICOMDataIngestionPipeline(tmp_path / "out")
+        rep = p.ingest_from_hospital_export(tmp_path / "src", "H")
+        assert rep["successful"] == 1 and rep["failed"] == 0 and rep["series_ingested"] == 1
+        assert rep["details"] == [{"file": "x.dcm", "status": "ingested", "view": "a4c"}]
+
     def test_failed_anonymisation_is_counted_with_message(self, tmp_path):
         src = tmp_path / "src"
         (src / "d").mkdir(parents=True)
