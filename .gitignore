@@ -72,3 +72,5 @@ temp/
 # DICOM
 dicom_raw/
 anonymized_dicom/
+.coverage
+coverage.xml

@@ -1,0 +1,14 @@
+[run]
+source = .
+omit =
+    tests/*
+    */conftest.py
+    */test_*.py
+    # Kaggle download + multi-hour GPU training/validation script: needs kagglehub credentials, the CAMUS
+    # dataset, a real torch install and interactive input() prompts; nothing in it runs offline.
+    DOWNLOAD_AND_ANALYZE.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
